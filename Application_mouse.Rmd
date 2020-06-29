@@ -1,0 +1,308 @@
+---
+title: "Application_mouse"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    df_print: paged
+date: '`r format(Sys.time(), "%d %B, %Y at %H:%M:%S")`'
+---
+
+```{r}
+rm(list = ls())
+gc()
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE, warning = TRUE, message = FALSE, fig.align = "center", fig.ext='png', fig.path = "Application_mouse/", cache = FALSE)
+```
+
+```{r}
+dist_trees = "euclidean"
+agreg_trees = "ward.D2"
+agreg_mfa = "ward.D2"
+```
+
+# Packages
+
+```{r}
+library(MouseGastrulationData)
+library(SingleCellExperiment)
+library(MultiAssayExperiment)
+library(SummarizedExperiment)
+library(scater)
+library(scran)
+
+library(factoextra)
+library(FactoMineR)
+
+library(kableExtra)
+library(tidyverse)
+
+library(reshape2)
+library(ggplot2)
+library(gridExtra)
+library(dendextend)
+
+library(corrplot)
+
+library(parallel)
+library(parallelDist)
+
+library(dynamicTreeCut)
+```
+
+# Functions
+
+```{r}
+source("Functions.R")
+```
+
+# Loading data
+
+https://bioconductor.org/packages/release/data/experiment/vignettes/MouseGastrulationData/inst/doc/MouseGastrulationData.html
+
+```{r}
+AtlasSampleMetadata[AtlasSampleMetadata$stage == "E6.5",]
+```
+
+```{r}
+sce <- EmbryoAtlasData(samples = AtlasSampleMetadata$sample[AtlasSampleMetadata$stage == "E6.5"])
+```
+
+```{r}
+sce
+```
+
+```{r}
+counts(sce)[6:9, 1:3]
+```
+
+```{r}
+head(sizeFactors(sce))
+```
+
+```{r}
+head(rowData(sce))
+```
+
+```{r}
+head(colData(sce))
+```
+
+The vignette recommends to use the "normalize" function of R package scater. The package indicates the function is deprecated and the user needs to use "logNormCounts".
+
+```{r}
+sce_norm = scater::logNormCounts(sce[,!colData(sce)$stripped])
+```
+
+```{r}
+logCounts = assay(sce_norm, "logcounts")
+dim(logCounts)
+```
+
+```{r}
+metadata = colData(sce)
+metadata = metadata[!metadata$stripped,]
+```
+
+```{r}
+metadata = metadata[order(metadata$cell),]
+logCounts = logCounts[,order(colnames(logCounts))]
+```
+
+```{r}
+identical(metadata$cell, colnames(logCounts), attrib.as.set = FALSE)
+```
+
+## Data transformation
+
+```{r}
+Y_genes = read.table("Y_genes_mouse.txt", header = TRUE, sep = ",")
+```
+
+```{r}
+logCounts = logCounts[which(Matrix::rowSums(logCounts)!=0),which(Matrix::colSums(logCounts)!=0)]
+logCounts = logCounts[!rownames(logCounts) == "ENSMUSG00000086503",] # sex gene, trouvé dans https://github.com/MarioniLab/EmbryoTimecourse2018/blob/master/analysis_scripts/atlas/core_functions.R function getHVGs
+# Doit exclure aussi les genes ychr
+logCounts = logCounts[!rownames(logCounts) %in% Y_genes$Gene.stable.ID, ]
+```
+
+```{r}
+metadata = metadata[metadata$cell%in%colnames(logCounts),]
+```
+
+```{r}
+logCounts = logCounts[which(Matrix::rowSums(logCounts)>(10^-3)*ncol(logCounts)),]
+```
+
+```{r}
+dim(logCounts)
+```
+
+## Most variable genes
+
+https://ivanek.github.io/analysisOfGenomicsDataWithR/09_scRNAseq_intro_html.html#9_mean-variance_relationship
+
+```{r}
+fTV = modelGeneVar(as.matrix(logCounts))
+fit.trend <- metadata(fTV)
+```
+
+```{r}
+plot(fit.trend$mean, fit.trend$var, xlab = "Mean of log-expression",  ylab = "Variance of log-expression")
+curve(fit.trend$trend(x), col = "dodgerblue", add = TRUE, lwd = 2)
+```
+
+```{r}
+head(fTV[order(fTV$bio, decreasing = TRUE), ])
+```
+
+```{r}
+fTV[rownames(fTV) == "ENSMUSG00000086503",]
+```
+
+
+```{r}
+prop = c(10^-6, 10^-3, 0.01, 0.05, 0.1)
+kable(rbind(prop, sapply(prop, FUN = function(x) sum(fTV$FDR<x)))) %>% 
+  kable_styling(full_width = FALSE) 
+```
+
+```{r}
+logCounts_FDR = logCounts[rownames(logCounts)%in%rownames(fTV[fTV$FDR<0.1,]),]
+```
+
+```{r}
+dim(logCounts_FDR)
+```
+
+## Création liste par type de cellules
+
+```{r}
+unique(metadata$celltype)
+```
+
+```{r}
+listLogCounts = by(t(as.matrix(logCounts_FDR)), INDICES = metadata$celltype, FUN = function(tab) tab)
+```
+
+```{r}
+listLogCounts = listLogCounts[sapply(listLogCounts, nrow)>1]
+```
+
+```{r}
+kable(data.frame("Group" = names(listLogCounts), "Nb_Samples" = sapply(listLogCounts, nrow)),row.names = FALSE) %>% kable_styling()
+```
+
+```{r}
+sapply(listLogCounts, FUN = function(tab) sum(colSums(tab)==0))
+```
+
+```{r}
+listLogCounts = lapply(listLogCounts, FUN = function(tab) tab[order(rownames(tab)), order(colnames(tab))])
+```
+
+```{r}
+sapply(listLogCounts, FUN = function(tab) sapply(listLogCounts, FUN = function(tab2) identical(colnames(tab), colnames(tab2), attrib.as.set = FALSE)))
+```
+
+```{r}
+Reduce(intersect, lapply(listLogCounts, FUN = function(tab) which(colSums(tab) == 0)))
+```
+
+
+# Tree integration
+
+## Building hierarchical clustering and retrieving coordinates
+
+```{r}
+hc_list = lapply(listLogCounts, FUN = function(x) hclust(dist(t(x), method = dist_trees), method = agreg_trees))
+```
+
+```{r}
+cop_list = lapply(hc_list, cophenetic)
+```
+
+```{r}
+mds_list = lapply(cop_list, cmdscale, k = nrow(as.matrix(cop_list[[1]]))-1)
+```
+
+## MFA
+
+```{r}
+MFA_res = MFA(do.call("cbind", mds_list),
+              group = unlist(lapply(mds_list, ncol)),
+              name.group = names(mds_list),
+              type = rep("c", length(mds_list)), ncp = Inf, graph = FALSE)
+```
+
+```{r}
+fviz_eig(MFA_res, addlabels = TRUE)
+kable(data.frame(round(MFA_res$group$RV,2)))%>% kable_styling(full_width = FALSE)
+```
+
+### Heatmap Contribution
+
+```{r, fig.height = 5, fig.width=12}
+corrplot(MFA_res$group$contrib[,1:50], method = "circle", mar = c(0, 0, 1.5, 0), bg = "antiquewhite", diag = TRUE, title = "Contribution, 50 first axes", is.corr = FALSE)
+```
+
+### Factorial Maps
+
+```{r, fig.height = 3.5 , fig.width = 12}
+gg_tab = data.frame(MFA_res$group$coord, "Data" = rownames(MFA_res$group$coord))
+
+xlim_max = max(MFA_res$group$coord[,1]) + 0.05
+ylim_max = max(MFA_res$group$coord[,2]) + 0.05
+
+gg1 = ggplot(gg_tab, aes(x = Dim.1, y = Dim.2)) + 
+  geom_point() + geom_text(aes(label=rownames(gg_tab)),hjust=1, vjust=1) +
+  ggtitle("Axes 1/2") + theme_bw() + xlim(c(-xlim_max,xlim_max)) + ylim(c(0,ylim_max))
+gg2 = ggplot(gg_tab, aes(x = Dim.2, y = Dim.3)) + 
+  geom_point() + geom_text(aes(label=rownames(gg_tab)),hjust=1, vjust=1) +
+  ggtitle("Axes 2/3") + theme_bw()  + xlim(c(-xlim_max,xlim_max)) + ylim(c(0,ylim_max))
+gg3 = ggplot(gg_tab, aes(x = Dim.3, y = Dim.4)) + 
+  geom_point() + geom_text(aes(label=rownames(gg_tab)),hjust=1, vjust=1) +
+  ggtitle("Axes 3/4") + theme_bw()  + xlim(c(-xlim_max,xlim_max)) + ylim(c(0,ylim_max))
+gg4 = ggplot(gg_tab, aes(x = Dim.4, y = Dim.5)) + 
+  geom_point() + geom_text(aes(label=rownames(gg_tab)),hjust=1, vjust=1) + 
+  ggtitle("Axes 4/5") +  theme_bw()  + xlim(c(-xlim_max,xlim_max)) + ylim(c(0,ylim_max))
+grid.arrange(gg1, gg2, gg3, gg4, ncol = 4)
+```
+
+## Cell type clustering
+
+```{r}
+hc_samples = hclust(dist(MFA_res$group$coord), method = agreg_mfa)
+```
+
+```{r}
+DTC_AFM = dynamicTreeCut::cutreeDynamic(hc_samples, minClusterSize = 1, distM = as.matrix(dist(MFA_res$group$coord)))
+```
+
+```{r}
+hc_samples_dend = branches_attr_by_clusters(as.dendrogram(hc_samples), clusters = (as.numeric(DTC_AFM)+1)[hc_samples$order])
+labels_colors(hc_samples_dend) = get_leaves_branches_col(hc_samples_dend)
+```
+
+```{r}
+fviz_dend(hc_samples_dend, horiz = TRUE, ggtheme = theme_bw(),main = "Hierarchical Clustering of cell types",
+          labels_track_height = 0.2, lwd = 1)
+```
+
+# RV heatmap
+
+```{r}
+corrplot2(MFA_res$group$RV, method = "circle", mar = c(0, 0, 1.5, 0), bg = "antiquewhite", diag = FALSE, tl.cex = 0.8, tl.col = "black", is.corr = FALSE,
+         order = hc_samples_dend,
+        coef_thresh = 0.23, addCoef.col = "gray98")
+```
+
+
+# InfoSession
+
+```{r}
+sessionInfo()
+```

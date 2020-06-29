@@ -1,0 +1,286 @@
+---
+title: "Simulations_trees"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    df_print: paged
+date: '`r format(Sys.time(), "%d %B, %Y at %H:%M:%S")`'
+---
+
+```{r}
+rm(list = ls())
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE, warning = TRUE, message = FALSE, fig.align = "center", fig.ext='png', fig.path = "Simulations_trees/", cache = FALSE)
+```
+
+# Packages
+
+```{r, warning=FALSE}
+library(factoextra)
+library(FactoMineR)
+
+library(aricode)
+
+library(kableExtra)
+library(tidyverse)
+
+library(reshape2)
+library(ggplot2)
+library(ggpubr)
+library(gridExtra)
+library(ComplexHeatmap)
+library(RColorBrewer)
+library(circlize)
+library(dendextend)
+
+library(corrplot)
+```
+
+# Functions
+
+```{r}
+source("Functions.R")
+```
+
+# Data simulation
+
+```{r}
+nb_feat = 1000
+nb_ind = 100
+nb_classif = 3
+```
+
+## Classification in each table/tree
+
+```{r}
+set.seed(2000)
+classif1 = sample(1:4, size = nb_ind, replace = TRUE)
+set.seed(1000)
+classif2 = sample(1:3, size = nb_ind, replace = TRUE)
+set.seed(10^6)
+classif3 = sample(1:5, size = nb_ind, replace = TRUE)
+```
+
+```{r}
+list_clusters = list(classif1, classif2, classif3)
+```
+
+```{r}
+round(sapply(list_clusters, function(x) sapply(list_clusters, NID, c2 = x)), 3)
+round(sapply(list_clusters, function(x) sapply(list_clusters, ARI, c2 = x)), 3)
+```
+
+## Table simulation
+
+```{r}
+n_dat = 3
+```
+
+```{r}
+list_sim = unlist(lapply(list_clusters, FUN = function(groups){
+  mean_vect = (1:max(groups))[groups]
+  lapply(1:n_dat, FUN = function(indice){
+    dat = do.call(cbind, lapply(1:nb_feat, FUN = function(i){
+      set.seed(i*indice*1000)
+      c(rnorm(nb_ind, mean = mean_vect, sd = indice))
+    }))
+  }) 
+}), recursive = FALSE)
+```
+
+```{r}
+names(list_sim) = paste0("Table_", 1:length(list_sim))
+```
+
+
+## Trees
+
+```{r}
+list_hc = lapply(list_sim, FUN = function(dat) hclust(dist(dat), method = "ward.D2"))
+```
+
+```{r}
+sapply(list_clusters, FUN = function(classif) sapply(list_hc, FUN = function(hc) ARI(cutree(hc, k = max(classif)), classif)))
+```
+
+
+```{r}
+list_hc_b = list_hc[c(1,4,7)]
+```
+
+```{r, echo=FALSE, out.width="32%", out.height="20%", fig.show='hold', fig.align="default"}
+par(mar = c(2,2,2,0))
+res = lapply(1:length(list_hc_b), FUN = function(i){
+  hc = list_hc_b[[i]]
+  hc$labels = NA
+  classif = data.frame("Classif" = c("red", "blue", "green", "magenta", "orange")[list_clusters[[i]]])
+  dend = as.dendrogram(hc)
+  plot(dend, main = paste0("Arbre ", i)) %>% colored_bars(colors = classif, dend = dend)
+})
+```
+
+## Data transformation
+
+```{r}
+list_coph = lapply(list_hc, cophenetic)
+list_mds = lapply(list_coph, cmdscale, k = nb_ind-1)
+```
+
+# MFA 
+
+```{r}
+res_mfa = MFA(do.call("cbind", list_mds),
+              group = unlist(lapply(list_mds, ncol)),
+              name.group = names(list_sim),
+              type = rep("c", length(list_mds)), ncp = Inf, graph = FALSE)
+```
+
+```{r}
+fviz_eig(res_mfa)
+```
+
+## Heatmap Contribution
+
+```{r, fig.height = 5, fig.width=12}
+corrplot(res_mfa$group$contrib[,1:25], method = "circle", mar = c(0, 0, 1.5, 0), bg = "black", diag = TRUE, title = "Contributions, 25 first axes", is.corr = FALSE)
+```
+
+### Factorial Maps
+
+```{r, fig.height = 3.5 , fig.width = 9}
+gg_tab = data.frame(res_mfa$group$coord, "Data" = rownames(res_mfa$group$coord), "Classification" = rep(1:3, each = n_dat))
+gg_tab$Classification = factor(gg_tab$Classification)
+
+xlim_max = max(res_mfa$group$coord[,1]) + 0.05
+ylim_max = max(res_mfa$group$coord[,2]) + 0.05
+
+gg1 = ggplot(gg_tab, aes(x = Dim.1, y = Dim.2, color = Classification)) + 
+  geom_point() + geom_text(aes(label=rownames(gg_tab)),hjust=1, vjust=1) +
+  ggtitle("Axes 1/2") + theme_bw() + xlim(c(-xlim_max,xlim_max)) + ylim(c(0,ylim_max)) +
+  xlab(paste0("Dim 1 - ", round(res_mfa$eig[1,2], 2), "%")) + ylab(paste0("Dim 2 - ", round(res_mfa$eig[2,2], 2), "%"))
+gg2 = ggplot(gg_tab, aes(x = Dim.2, y = Dim.3, color = Classification)) + 
+  geom_point() + geom_text(aes(label=rownames(gg_tab)),hjust=1, vjust=1) +
+  ggtitle("Axes 2/3") + theme_bw()  + xlim(c(-xlim_max,xlim_max)) + ylim(c(0,ylim_max)) +
+  xlab(paste0("Dim 2 - ", round(res_mfa$eig[2,2], 2), "%")) + ylab(paste0("Dim 3 - ", round(res_mfa$eig[3,2], 2), "%"))
+gg3 = ggplot(gg_tab, aes(x = Dim.3, y = Dim.4, color = Classification)) + 
+  geom_point() + geom_text(aes(label=rownames(gg_tab)),hjust=1, vjust=1) +
+  ggtitle("Axes 3/4") + theme_bw()  + xlim(c(-xlim_max,xlim_max)) + ylim(c(0,ylim_max)) +
+  xlab(paste0("Dim 3 - ", round(res_mfa$eig[3,2], 2), "%")) + ylab(paste0("Dim 4 - ", round(res_mfa$eig[4,2], 2), "%"))
+gg4 = ggplot(gg_tab, aes(x = Dim.4, y = Dim.5, color = Classification)) + 
+  geom_point() + geom_text(aes(label=rownames(gg_tab)),hjust=1, vjust=1) + 
+  ggtitle("Axes 4/5") +  theme_bw()  + xlim(c(-xlim_max,xlim_max)) + ylim(c(0,ylim_max)) +
+  xlab(paste0("Dim 4 - ", round(res_mfa$eig[4,2], 2), "%")) + ylab(paste0("Dim 5 - ", round(res_mfa$eig[5,2], 2), "%"))
+ggarrange(gg1, gg2, gg3, gg4, ncol = 4, common.legend = TRUE, legend="bottom")
+```
+
+## Data Clustering
+
+```{r}
+hc_samples = hclust(dist(res_mfa$group$coord), method = "ward.D2")
+```
+
+```{r}
+DTC_AFM = dynamicTreeCut::cutreeDynamic(hc_samples, minClusterSize = 1, distM = as.matrix(dist(res_mfa$group$coord)))
+k_cut = max(DTC_AFM)
+groups = cutree(hc_samples, k = k_cut)
+```
+
+```{r}
+par(mar = c(2,2.5,2,0))
+hc = hc_samples
+hc$labels = NA
+dend = as.dendrogram(hc)
+bars = data.frame("DTC" = c("blue", "black", "green", "magenta", "cyan", "orange", "violet")[as.numeric(DTC_AFM)])
+plot(dend, main = "Group of tables") %>% colored_bars(colors = bars, dend = dend, sort_by_labels_order = TRUE)
+```
+
+```{r, fig.height = 6, fig.width = 12}
+fviz_dend(hc_samples, k = 3, cex = 1,  k_colors = c("#2E9FDF", "#00AFBB", "#E7B800", "#FC4E07", "#AA4371"),
+          color_labels_by_k = TRUE, ggtheme = theme_bw(), horiz = TRUE, main = "Hierarchical Clustering of simulated tables",
+          labels_track_height = 0.3)
+```
+
+## Heatmap RV
+
+```{r}
+corrplot2(res_mfa$group$RV, method = "circle", mar = c(0, 0, 1, 0), bg = "gray85", diag = FALSE, tl.cex = 1.2, tl.col = "black",  title = "RV coefficients between MDS datasets",
+         is.corr = FALSE, addrect = 3, order = hc_samples, addCoef.col = "antiquewhite", coef_thresh = 0.5)
+```
+
+## Consensus tree on all MFA axes
+
+```{r}
+hc_cs = hclust(dist(res_mfa$ind$coord), method = "ward.D2")
+```
+
+## Consensus tree on MFA subgroups
+
+```{r}
+mds_sublists = lapply(1:k_cut, FUN = function(i) list_mds[names(list_mds)%in%names(groups[groups == i])])
+```
+
+```{r}
+mfa_sublists = lapply(mds_sublists, FUN = function(liste){
+  MFA(do.call("cbind", liste),
+              group = unlist(lapply(liste, ncol)),
+              name.group = names(liste),
+              type = rep("c", length(liste)), ncp = Inf, graph = FALSE)
+})
+```
+
+```{r, fig.width = 12, fig.height = 5}
+grid.arrange(fviz_eig(mfa_sublists[[1]], addlabels = TRUE, main = "Group 1"), 
+             fviz_eig(mfa_sublists[[2]], addlabels = TRUE, main = "Group 2"), 
+             fviz_eig(mfa_sublists[[3]], addlabels = TRUE, main = "Group 3"),
+             ncol = 3)
+```
+
+### Heatmaps RV
+
+```{r, fig.height = 4, fig.width = 12}
+par(mfrow = c(1,3))
+corrplot(mfa_sublists[[1]]$group$RV, method = "circle", mar = c(0, 0, 1.5, 0), bg = "gray85", diag = FALSE, title = "Group 1", tl.cex = 0.8, addCoef.col = "antiquewhite")
+corrplot(mfa_sublists[[2]]$group$RV, method = "circle", mar = c(0, 0, 1.5, 0), bg = "gray85", diag = FALSE, title = "Group 2", tl.cex = 0.8, addCoef.col = "antiquewhite")
+corrplot(mfa_sublists[[3]]$group$RV, method = "circle", mar = c(0, 0, 1.5, 0), bg = "gray85", diag = FALSE, title = "Group 3", tl.cex = 0.8, addCoef.col = "antiquewhite")
+```
+
+### Consensus tree
+
+```{r}
+hc_cs_sub = lapply(mfa_sublists, FUN = function(MFARes) hclust(dist(MFARes$ind$coord), method = "ward.D2"))
+```
+
+## Comparison of the consensus trees
+
+```{r, fig.height = 3.5, fig.width = 3.5}
+par(mar = c(2.5,2.6,1,0))
+hc = hc_cs
+hc$labels = NA
+colors = data.frame(do.call("cbind", lapply(1:length(list_clusters), FUN = function(x)  c("brown", "lightblue", "antiquewhite", "darkorchid3", "orange")[list_clusters[[x]]])))
+colnames(colors) = paste0("Class.", 1:length(list_clusters))
+plot(as.dendrogram(hc), main = "Consensus Tree on global MFA", cex = 1, cex.axis = 1, cex.main = 1) %>% 
+  colored_bars(colors = colors, dend = as.dendrogram(hc), y_shift = -1, cex.rowLabels = 0.9)
+```
+
+```{r}
+sapply(list_clusters, FUN = function(classif) max(apply(cutree(hc_cs, k = 2:length(hc_cs$order)), 2, ARI, c2 = classif)))
+```
+
+```{r, fig.height = 5, fig.width = 5, out.width = "30%", fig.show="hold", align = "default"}
+par(mar = c(3,2,1,0))
+res = lapply(1:length(hc_cs_sub), FUN = function(i){
+  hc = hc_cs_sub[[i]]
+  hc$labels = NA
+  plot(as.dendrogram(hc), main = paste0("Consensus Tree - Group ", i))  %>% colored_bars(colors = colors, dend = as.dendrogram(hc))
+  })
+```
+
+# InfoSession
+
+```{r}
+sessionInfo()
+```

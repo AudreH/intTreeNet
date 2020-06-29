@@ -1,0 +1,337 @@
+---
+title: "Application_TCGA"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    df_print: paged
+date: '`r format(Sys.time(), "%d %B, %Y at %H:%M:%S")`'
+---
+
+```{r}
+rm(list = ls())
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE, warning = TRUE, message = FALSE, fig.align = "center", fig.ext='png', fig.path = "Application_TCGA/", cache = FALSE)
+```
+
+# Packages
+
+```{r, warning=FALSE}
+library(factoextra)
+library(FactoMineR)
+
+library(aricode)
+
+library(kableExtra)
+library(tidyverse)
+
+library(reshape2)
+library(ggplot2)
+library(ggpubr)
+library(gridExtra)
+library(ComplexHeatmap)
+library(RColorBrewer)
+library(circlize)
+library(dendextend)
+
+library(igraph)
+library(qgraph)
+library(corrplot)
+
+library(parallel)
+library(huge)
+
+library(limma)
+```
+
+#  Functions
+
+```{r}
+source("Functions.R")
+```
+
+# Settings
+
+```{r}
+agreg = "ward.D2"
+```
+
+# Division of patients in cancer subtypes
+
+```{r}
+load("prot_BRCA.RData") 
+```
+
+```{r}
+prot_BRCA = prot_BRCA[which(apply(prot_BRCA, 1, FUN = function(x) sum(is.na(x))) == 0),]
+```
+
+```{r}
+dim(prot_BRCA)
+```
+
+```{r}
+subtypes = read.table("aims_subtypes.txt")
+colnames(prot_BRCA) = substr(colnames(prot_BRCA), 1, nchar(subtypes[1,1]))
+colnames(prot_BRCA) = gsub("[.]", "-", colnames(prot_BRCA))
+rownames(prot_BRCA) = gsub("[.]", "-", rownames(prot_BRCA)) 
+```
+
+```{r}
+id_del = colnames(prot_BRCA)[duplicated(colnames(prot_BRCA)) | duplicated(colnames(prot_BRCA), fromLast=TRUE)]
+prot_BRCA2 = prot_BRCA[, -which(colnames(prot_BRCA)%in%id_del)]
+```
+
+```{r}
+id_keep = intersect(colnames(prot_BRCA2), subtypes[,1])
+```
+
+```{r}
+subtypes = subtypes[subtypes[,1]%in%id_keep, ]
+subtypes = subtypes[order(subtypes[,1]),]
+```
+
+```{r}
+colnames(subtypes) = c("ID", "Subtypes")
+```
+
+```{r}
+prot_BRCA2 = prot_BRCA2[,colnames(prot_BRCA2)%in%id_keep]
+prot_BRCA2 = prot_BRCA2[,order(colnames(prot_BRCA2))]
+```
+
+```{r}
+identical(colnames(prot_BRCA2), subtypes[,1], attrib.as.set = FALSE)
+```
+
+```{r}
+prot_BRCA_list = by(t(prot_BRCA2), INDICES = list(subtypes[,2]), FUN = function(x) t(x))
+```
+
+```{r}
+sapply(prot_BRCA_list, ncol)
+```
+
+```{r}
+names(prot_BRCA_list) = c("Basal-like", "HER2-enriched", "Luminal A", "Luminal B", "Normal")
+```
+
+## Protein selection (limma)
+
+```{r}
+designMat = model.matrix(~0+Subtypes, subtypes)
+colnames(designMat) = gsub("Subtypes", "", colnames(designMat))
+```
+
+```{r}
+contrast.matrix = makeContrasts(Basal - (Her2 + LumA + LumB + Normal),
+                                Her2 - (Basal + LumA + LumB + Normal),
+                                Normal - (Her2 + LumA + LumB + Basal),
+                                LumA - (Her2 + Basal + LumB + Normal),
+                                LumB - (Her2 + LumA + Basal + Normal), levels = designMat)
+```
+
+```{r}
+fit <- lmFit(prot_BRCA2, design=designMat)
+fit2 = contrasts.fit(fit, contrast.matrix)
+fit2 <- eBayes(fit2)
+```
+
+```{r}
+BasalTab = topTable(fit2, number = 10, coef = "Basal - (Her2 + LumA + LumB + Normal)")
+Her2Tab = topTable(fit2, number = 10, coef = "Her2 - (Basal + LumA + LumB + Normal)")
+NormalTab = topTable(fit2, number = 10, coef = "Normal - (Her2 + LumA + LumB + Basal)")
+LumATab = topTable(fit2, number = 10, coef = "LumA - (Her2 + Basal + LumB + Normal)")
+LumBTab = topTable(fit2, number = 10, coef = "LumB - (Her2 + LumA + Basal + Normal)")
+```
+
+```{r}
+nlim = 5
+```
+
+
+```{r}
+prot_keep = unique(c(rownames(BasalTab)[1:nlim], 
+                     rownames(Her2Tab)[1:nlim], 
+                     # rownames(NormalTab)[1:nlim],
+                     rownames(LumATab)[1:nlim], 
+                     rownames(LumBTab)[1:nlim]))
+```
+
+```{r}
+prot_keep
+```
+
+```{r}
+prot_BRCA_list = lapply(prot_BRCA_list, FUN = function(tab) tab[rownames(tab)%in%prot_keep, ])
+```
+
+```{r}
+prot_BRCA_list = lapply(prot_BRCA_list, t)
+```
+
+```{r}
+prot_BRCA_list = lapply(prot_BRCA_list, scale, center = TRUE, scale = TRUE)
+```
+
+# Subtypes networks
+
+```{r}
+hglasso = mclapply(prot_BRCA_list, huge, lambda.min.ratio = 10^-5, nlambda = 500, method = "glasso", verbose = FALSE, mc.cores = 3)
+```
+
+```{r}
+bic.select = lapply(hglasso, huge.select, criterion = "ebic", ebic.gamma = 0)
+```
+
+```{r}
+list_adjacency = lapply(bic.select, FUN = function(x) x$refit)
+```
+
+```{r}
+sapply(list_adjacency, FUN = function(adj) edge_density(graph_from_adjacency_matrix(adj, mode = "undirected", diag = FALSE), loops = FALSE))
+```
+
+```{r, fig.width = 15, fig.height = 3}
+par(mfrow = c(1,5))
+res = lapply(1:length(list_adjacency), FUN = function(i){
+  hc = hclust(as.dist(list_adjacency[[i]]), method = "complete")
+  corrplot(list_adjacency[[i]][hc$order, hc$order], is.corr = FALSE, method = "color", diag = FALSE, bg = 'gray85', title = names(list_adjacency)[i], mar = c(0,0.5,1.5,1.5))
+})
+```
+
+```{r}
+densGraph = sapply(list_adjacency, FUN = function(adj) edge_density(graph_from_adjacency_matrix(adj, mode = "undirected", diag = FALSE), loops = FALSE))
+list_adjacency = list_adjacency[which(densGraph!=0)]
+```
+
+# MFA 
+
+## Shortest path and MDS
+
+```{r}
+dist_list = lapply(1:length(list_adjacency), FUN = function(i){
+  D = distances(graph_from_adjacency_matrix(list_adjacency[[i]], mode = "undirected"), mode = "all")
+  D[is.infinite(D)] = nrow(D)*(nrow(D)-1)/2 + 1 # Nombre d'arcs dans le réseau complet + 1 
+  D
+})
+names(dist_list) = names(list_adjacency)
+```
+
+```{r, fig.width = 15, fig.height = 3}
+par(mfrow = c(1,5))
+res = lapply(1:length(dist_list), FUN = function(i){
+  hc = hclust(as.dist(dist_list[[i]]), method = "complete")
+  corrplot(dist_list[[i]][hc$order, hc$order], is.corr = FALSE, method = "color", diag = FALSE, bg = 'gray85', title = names(dist_list)[i], mar = c(0,0.5,1.5,1.5))
+})
+```
+
+
+```{r}
+list_mds = lapply(dist_list, cmdscale, k = nrow(dist_list[[1]])-1)
+```
+
+## MFA
+
+```{r}
+res_mfa = MFA(do.call("cbind", list_mds),
+              group = unlist(lapply(list_mds, ncol)),
+              name.group = names(list_mds),
+              type = rep("s", length(list_mds)), ncp = Inf, graph = FALSE)
+```
+
+```{r, fig.show = "hold", fig.align = "default"}
+fviz_eig(res_mfa, addlabels = TRUE)
+```
+
+## Heatmap Contribution
+
+```{r, fig.height = 4.5, fig.width=11}
+corrplot(res_mfa$group$contrib, method = "circle", mar = c(0, 0, 1.5, 0), bg = "black", diag = TRUE, title = "Contributions all axes", is.corr = FALSE)
+```
+
+## Factorial Maps
+
+```{r, fig.height = 3.5 , fig.width = 9}
+gg_tab = data.frame(res_mfa$group$coord, "Data" = rownames(res_mfa$group$coord))
+xlim_max = max(res_mfa$group$coord[,1]) + 0.05
+ylim_max = max(res_mfa$group$coord[,2]) + 0.05
+
+gg1 = ggplot(gg_tab, aes(x = Dim.1, y = Dim.2)) + 
+  geom_point() + geom_text(aes(label=rownames(gg_tab)),hjust=1, vjust=1) +
+  ggtitle("Axes 1/2") + theme_bw() + xlim(c(-xlim_max,xlim_max)) + ylim(c(0,ylim_max))
+gg2 = ggplot(gg_tab, aes(x = Dim.2, y = Dim.3)) + 
+  geom_point() + geom_text(aes(label=rownames(gg_tab)),hjust=1, vjust=1) +
+  ggtitle("Axes 2/3") + theme_bw()  + xlim(c(-xlim_max,xlim_max)) + ylim(c(0,ylim_max))
+gg3 = ggplot(gg_tab, aes(x = Dim.3, y = Dim.4)) + 
+  geom_point() + geom_text(aes(label=rownames(gg_tab)),hjust=1, vjust=1) +
+  ggtitle("Axes 3/4") + theme_bw()  + xlim(c(-xlim_max,xlim_max)) + ylim(c(0,ylim_max))
+gg4 = ggplot(gg_tab, aes(x = Dim.4, y = Dim.5)) + 
+  geom_point() + geom_text(aes(label=rownames(gg_tab)),hjust=1, vjust=1) + 
+  ggtitle("Axes 4/5") +  theme_bw()  + xlim(c(-xlim_max,xlim_max)) + ylim(c(0,ylim_max))
+ggarrange(gg1, gg2, gg3, gg4, ncol = 4, common.legend = TRUE, legend="bottom")
+```
+
+```{r}
+hc_subtypes = hclust(dist(res_mfa$group$coord), method = agreg)
+```
+
+```{r}
+DTC_AFM = dynamicTreeCut::cutreeDynamic(hc_subtypes, minClusterSize = 1, distM = as.matrix(dist(res_mfa$group$coord)))
+k_cut = max(max(DTC_AFM), 2)
+groups = cutree(hc_subtypes, k = k_cut)
+```
+
+```{r, fig.height = 6, fig.width = 6.1}
+fviz_dend(hc_subtypes, k = k_cut, cex = 1,  k_colors = c("#2E9FDF", "#00AFBB", "#E7B800", "#FC4E07", "#AA4371"),
+          color_labels_by_k = TRUE, ggtheme = theme_bw(), horiz = TRUE, main = "Hierarchical Clustering of cancer subtypes",
+          labels_track_height = 0.5)
+```
+
+## Heatmap RV
+
+```{r}
+corrplot(res_mfa$group$RV, method = "circle", mar = c(0, 0, 1.5, 0), bg = "gray85", diag = FALSE, title = "RV coefficients between MDS datasets", addCoef.col = "antiquewhite")
+```
+
+## Consensus network by group
+
+```{r}
+consensus_by_groups = lapply(unique(groups), FUN = function(x){
+  # x = 1
+  list_adj = list_adjacency[names(list_adjacency)%in%names(groups)[groups == x]]
+  Adj = Reduce("+", list_adj)
+  Adj[Adj<=(0.5*length(list_adj))] = 0
+  Adj[Adj>=(0.5*length(list_adj))] = 1
+  colnames(Adj) = rownames(Adj) = colnames(prot_BRCA_list[[1]])
+  Adj
+})
+```
+
+```{r, fig.height = 5, fig.width = 10}
+par(mfrow = c(1,2))
+qgraph(consensus_by_groups[[1]], 
+       shape = "rectangle", vsize = sapply(colnames(consensus_by_groups[[1]]), nchar)*2, vsize2 = 2.5,
+       title = paste0("Consensus on ", paste(names(groups)[groups == 1], collapse = ", ")),
+       mar = c(3,3,3,3), color = "antiquewhite", diag = FALSE, 
+       labels = colnames(consensus_by_groups[[1]]), label.scale = FALSE, 
+       label.cex = 0.8, label.prop = 0.5, negDashed = TRUE, edge.color = "black", edge.width = 0.5, layout = "spring",
+       layout.par = list(repulse.rad = nrow(consensus_by_groups[[1]])^(2.5)))
+
+qgraph(consensus_by_groups[[2]], 
+       shape = "rectangle", vsize = sapply(colnames(consensus_by_groups[[2]]), nchar)*2, vsize2 = 2.5,
+       title = paste0("Consensus on ", paste(names(groups)[groups == 2], collapse = ", ")),
+       mar = c(3,3,3,3), color = "antiquewhite", diag = FALSE, 
+       labels = colnames(consensus_by_groups[[1]]), label.scale = FALSE, 
+       label.cex = 0.8, label.prop = 0.5, negDashed = TRUE, edge.color = "black", edge.width = 0.5, layout = "spring",
+       layout.par = list(repulse.rad = nrow(consensus_by_groups[[2]])^(2.5)))
+```
+
+# InfoSession
+
+```{r}
+sessionInfo()
+```

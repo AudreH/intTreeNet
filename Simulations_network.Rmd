@@ -1,0 +1,260 @@
+---
+title: "Simulations_network"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    df_print: paged
+date: '`r format(Sys.time(), "%d %B, %Y at %H:%M:%S")`'
+---
+
+```{r}
+rm(list = ls())
+```
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE, warning = TRUE, message = FALSE, fig.align = "center", fig.ext='png', fig.path = "Simulations_network/", cache = FALSE)
+```
+
+# Packages
+
+```{r, warning=FALSE}
+library(factoextra)
+library(FactoMineR)
+
+library(aricode)
+
+library(kableExtra)
+library(tidyverse)
+
+library(reshape2)
+library(ggplot2)
+library(ggpubr)
+library(gridExtra)
+library(ComplexHeatmap)
+library(RColorBrewer)
+library(circlize)
+library(dendextend)
+
+library(qgraph)
+library(igraph)
+library(corrplot)
+```
+
+#  Fonctions utiles
+
+```{r}
+source("Functions.R")
+```
+
+# Network simulation
+
+## Settings
+
+```{r}
+nb_ind =  100
+```
+
+```{r}
+set.seed(2000)
+classif1 = sample(1:4, size = nb_ind, replace = TRUE)
+set.seed(1000)
+classif2 = sample(1:3, size = nb_ind, replace = TRUE)
+set.seed(10^6)
+classif3 = sample(1:5, size = nb_ind, replace = TRUE)
+```
+
+```{r}
+list_clusters = list(classif1, classif2, classif3)
+```
+
+```{r}
+round(sapply(list_clusters, function(x) sapply(list_clusters, ARI, c2 = x)), 3)
+```
+
+```{r}
+n_net = 3 
+```
+
+```{r}
+prob_inside = 0.80 # probability of an edge between two nodes of the same cluster
+prob_outside = 0.05 # probability of an edge between two nodes that are not in the same cluster
+```
+
+## Network simulation
+
+```{r}
+list_sim = unlist(lapply(list_clusters, FUN = function(groups){
+  matEdgesProb = matrix(prob_outside, nrow = max(groups), ncol = max(groups))
+  diag(matEdgesProb) = prob_inside
+  matEdgesProb = matEdgesProb[groups, groups]
+  mean_mat =  matrix(0.1, nrow = max(groups), ncol = max(groups))
+  diag(mean_mat) = (1:max(groups))
+  mean_mat = mean_mat[groups, groups]
+  
+  lapply(1:n_net, FUN = function(indice){
+  
+    A =  matrix(0, ncol = length(groups), nrow = length(groups))
+    set.seed(indice*1000)
+    A = matrix(rbinom(length(groups)^2, 1, prob = matEdgesProb), ncol = length(groups), nrow = length(groups))    
+    A[lower.tri(A, diag = FALSE)] = t(A)[lower.tri(A, diag = FALSE)]
+    
+    return(list(A = A))
+    }) 
+}), recursive = FALSE)
+```
+
+```{r}
+names(list_sim) = paste0("Net_", 1:length(list_sim))
+```
+
+## Adjancecy matrices
+
+```{r}
+list_adjacency = lapply(list_sim, FUN  = function(res) res$A)
+```
+
+```{r, fig.width = 12, fig.height = 4}
+par(mfrow = c(1,3))
+corrplot(list_adjacency[[1]][order(list_clusters[[1]]), order(list_clusters[[1]])], is.corr = FALSE, method = "color", diag = FALSE, bg = 'gray85')
+corrplot(list_adjacency[[4]][order(list_clusters[[2]]), order(list_clusters[[2]])], is.corr = FALSE, method = "color", diag = FALSE, bg = 'gray85')
+corrplot(list_adjacency[[7]][order(list_clusters[[3]]), order(list_clusters[[3]])], is.corr = FALSE, method = "color", diag = FALSE, bg = 'gray85')
+```
+
+# MFA on adjacency matrices
+
+## Shortest path and MDS
+
+```{r}
+dist_list = lapply(1:length(list_adjacency), FUN = function(i) distances(graph_from_adjacency_matrix(list_adjacency[[i]], mode = "undirected"), mode = "all"))
+```
+
+```{r, fig.width = 12, fig.height = 4}
+par(mfrow = c(1,3))
+corrplot(dist_list[[1]][order(list_clusters[[1]]), order(list_clusters[[1]])], is.corr = FALSE, method = "color", diag = FALSE, bg = 'gray85')
+corrplot(dist_list[[4]][order(list_clusters[[2]]), order(list_clusters[[2]])], is.corr = FALSE, method = "color", diag = FALSE, bg = 'gray85')
+corrplot(dist_list[[7]][order(list_clusters[[3]]), order(list_clusters[[3]])], is.corr = FALSE, method = "color", diag = FALSE, bg = 'gray85')
+```
+
+```{r}
+list_mds = lapply(dist_list, cmdscale, k = nb_ind-1)
+```
+
+## MFA 
+
+```{r}
+res_mfa = MFA(do.call("cbind", list_mds),
+              group = unlist(lapply(list_mds, ncol)),
+              name.group = names(list_sim),
+              type = rep("c", length(list_mds)), ncp = Inf, graph = FALSE)
+```
+
+```{r}
+fviz_eig(res_mfa, choice = "variance", addlabels = TRUE)
+```
+
+## Heatmap Contribution
+
+```{r, fig.height = 5, fig.width=12}
+corrplot(res_mfa$group$contrib[,1:25], method = "circle", mar = c(0, 0, 1.5, 0), bg = "black", diag = TRUE, title = "Contributions, 25 first axes", is.corr = FALSE)
+```
+
+## Factorial Maps
+
+```{r, fig.height = 3.5 , fig.width = 9}
+gg_tab = data.frame(res_mfa$group$coord, "Data" = rownames(res_mfa$group$coord), "Classification" = rep(1:3, each = n_net))
+gg_tab$Classification = factor(gg_tab$Classification)
+
+xlim_max = max(res_mfa$group$coord[,1]) + 0.05
+ylim_max = max(res_mfa$group$coord[,2]) + 0.05
+
+gg1 = ggplot(gg_tab, aes(x = Dim.1, y = Dim.2, color = Classification)) + 
+  geom_point() + geom_text(aes(label=rownames(gg_tab)),hjust=1, vjust=1) +
+  ggtitle("Axes 1/2") + theme_bw() + xlim(c(-xlim_max,xlim_max)) + ylim(c(0,ylim_max)) +
+  xlab(paste0("Dim 1 - ", round(res_mfa$eig[1,2], 2), "%")) + ylab(paste0("Dim 2 - ", round(res_mfa$eig[2,2], 2), "%"))
+gg2 = ggplot(gg_tab, aes(x = Dim.2, y = Dim.3, color = Classification)) + 
+  geom_point() + geom_text(aes(label=rownames(gg_tab)),hjust=1, vjust=1) +
+  ggtitle("Axes 2/3") + theme_bw()  + xlim(c(-xlim_max,xlim_max)) + ylim(c(0,ylim_max)) +
+  xlab(paste0("Dim 2 - ", round(res_mfa$eig[2,2], 2), "%")) + ylab(paste0("Dim 3 - ", round(res_mfa$eig[3,2], 2), "%"))
+gg3 = ggplot(gg_tab, aes(x = Dim.3, y = Dim.4, color = Classification)) + 
+  geom_point() + geom_text(aes(label=rownames(gg_tab)),hjust=1, vjust=1) +
+  ggtitle("Axes 3/4") + theme_bw()  + xlim(c(-xlim_max,xlim_max)) + ylim(c(0,ylim_max)) +
+  xlab(paste0("Dim 3 - ", round(res_mfa$eig[3,2], 2), "%")) + ylab(paste0("Dim 4 - ", round(res_mfa$eig[4,2], 2), "%"))
+gg4 = ggplot(gg_tab, aes(x = Dim.4, y = Dim.5, color = Classification)) + 
+  geom_point() + geom_text(aes(label=rownames(gg_tab)),hjust=1, vjust=1) + 
+  ggtitle("Axes 4/5") +  theme_bw()  + xlim(c(-xlim_max,xlim_max)) + ylim(c(0,ylim_max)) +
+  xlab(paste0("Dim 4 - ", round(res_mfa$eig[4,2], 2), "%")) + ylab(paste0("Dim 5 - ", round(res_mfa$eig[5,2], 2), "%"))
+ggarrange(gg1, gg2, gg3, gg4, ncol = 4, common.legend = TRUE, legend="bottom")
+```
+
+```{r}
+hc_samples = hclust(dist(res_mfa$group$coord), method = "ward.D2")
+```
+
+```{r}
+DTC_AFM = dynamicTreeCut::cutreeDynamic(hc_samples, minClusterSize = 1, distM = as.matrix(dist(res_mfa$group$coord)))
+k_cut = max(DTC_AFM)
+groups = cutree(hc_samples, k = k_cut)
+```
+
+```{r, fig.height = 6, fig.width = 12}
+fviz_dend(hc_samples, k = 3, cex = 1,  k_colors = c("#2E9FDF", "#00AFBB", "#E7B800", "#FC4E07", "#AA4371"),
+          color_labels_by_k = TRUE, ggtheme = theme_bw(), horiz = TRUE, main = "Hierarchical Clustering of simulated networks",
+          labels_track_height = 0.3)
+```
+
+## Heatmap RV
+
+```{r, fig.height = 5, fig.width = 5}
+corrplot2(res_mfa$group$RV, method = "circle", mar = c(0, 0, 1, 0), bg = "gray85", diag = FALSE, tl.cex = 1.2, tl.col = "black",  title = "RV coefficients between MDS datasets",
+         is.corr = FALSE, addrect = 3, order = hc_samples, addCoef.col = "antiquewhite", coef_thresh = 0.5)
+```
+
+## Consensus network(s)
+
+```{r}
+consensus_by_groups = lapply(unique(groups), FUN = function(x){
+  list_adj = list_adjacency[names(list_adjacency)%in%names(groups)[groups == x]]
+  Adj = Reduce("+", list_adj)
+  Adj[Adj<=(0.5*length(list_adj))] = 0
+  Adj[Adj>=(0.5*length(list_adj))] = 1
+  Adj
+})
+```
+
+
+```{r, fig.height = 5, fig.width = 15}
+par(mfrow = c(1,3))
+qgraph(consensus_by_groups[[1]], 
+       shape = "rectangle", vsize = 2, vsize2 = 2.2,
+       title = paste0("Consensus on ", paste(names(groups)[groups == 1], collapse = ", ")),
+       mar = c(2,2,2,2), color = c("antiquewhite", "aliceblue", "darkorchid3", "forestgreen", "blue")[classif1], diag = FALSE, 
+       labels = colnames(consensus_by_groups[[1]]), title.cex = 2,
+       label.cex = 1.2, negDashed = TRUE, edge.color = "black", edge.width = 0.5, layout = "spring",
+       layout.par = list(repulse.rad = nrow(consensus_by_groups[[1]])^(2.5)))
+
+qgraph(consensus_by_groups[[2]], 
+       shape = "rectangle", vsize = 2, vsize2 = 2.2,
+       title = paste0("Consensus on ", paste(names(groups)[groups == 2], collapse = ", ")),
+       mar = c(2,2,2,2), color =  c("antiquewhite", "aliceblue", "darkorchid3", "forestgreen", "blue")[classif2], diag = FALSE, 
+       labels = colnames(consensus_by_groups[[2]]), title.cex = 2,
+       label.cex = 1.2, negDashed = TRUE, edge.color = "black", edge.width = 0.5, layout = "spring",
+       layout.par = list(repulse.rad = nrow(consensus_by_groups[[2]])^(2.5)))
+
+qgraph(consensus_by_groups[[3]], 
+       shape = "rectangle", vsize = 2, vsize2 = 2.2,
+       title = paste0("Consensus on ", paste(names(groups)[groups == 3], collapse = ", ")),
+       mar = c(2,2,2,2), color =  c("antiquewhite", "aliceblue", "darkorchid3", "forestgreen", "blue")[classif3], diag = FALSE, 
+       labels = colnames(consensus_by_groups[[3]]), title.cex = 2,
+       label.cex = 1.2, negDashed = TRUE, edge.color = "black", edge.width = 0.5, layout = "spring",
+       layout.par = list(repulse.rad = nrow(consensus_by_groups[[3]])^(2.5)))
+```
+
+# InfoSession
+
+```{r}
+sessionInfo()
+```
+
