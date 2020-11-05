@@ -1,3 +1,5 @@
+
+# ---- NID AND ARI COMPARE : ----
 ## @Julien Comparison between two trees
 
 
@@ -12,6 +14,7 @@ ARI_compare = function(tree_1, tree_2, cut_index_max = NULL){
                                                                cutree(tree_2, k = cut_index))))
 }
 
+# ---- CHANGES IN CORRPLOT : ----
 ## Fonction pour remanier corrplot
 
 corrplot2 = function (corr, method = c("circle", "square", "ellipse", "number", 
@@ -31,8 +34,9 @@ corrplot2 = function (corr, method = c("circle", "square", "ellipse", "number",
                       cl.length = NULL, cl.cex = 0.8, cl.ratio = 0.15, cl.align.text = "c", 
                       cl.offset = 0.5, number.cex = 1, number.font = 2, number.digits = NULL, 
                       addshade = c("negative", "positive", "all"), shade.lwd = 1, 
-                      shade.col = "white", p.mat = NULL, sig.level = 0.05, insig = c("pch", 
-                                                                                     "p-value", "blank", "n", "label_sig"), pch = 4, pch.col = "black", 
+                      shade.col = "white", p.mat = NULL, sig.level = 0.05,
+                      insig = c("pch", 
+                                "p-value", "blank", "n", "label_sig"), pch = 4, pch.col = "black", 
                       pch.cex = 3, plotCI = c("n", "square", "circle", "rect"), 
                       lowCI.mat = NULL, uppCI.mat = NULL, na.label = "?", na.label.col = "black", 
                       win.asp = 1, ...) 
@@ -162,7 +166,7 @@ corrplot2 = function (corr, method = c("circle", "square", "ellipse", "number",
   }
   
   corr2 = corr
-  corr2[abs(corr2)<coef_thresh] <- NA
+  corr2[abs(corr2)<(coef_thresh+intercept)*zoom] <- NA
   
   Pos2 <- getPos.Dat(corr2)[[1]]
   if (any(is.na(corr2)) && is.character(na.label)) {
@@ -590,8 +594,10 @@ corrRect.hclust2 = function (corr, k = 2, col = "black", lwd = 2, tree)
   hc <- cutree(tree, k = k)
   clustab <- table(hc)[unique(hc[tree$order])]
   cu <- c(0, cumsum(clustab))
-  rect(cu[-(k + 1)] + 0.5, n - cu[-(k + 1)] + 1.5, cu[-1] + 
-         0.5, n - cu[-1] + 1.5, border = col, lwd = lwd)
+  # rect(cu[-(k + 1)] + 0.5, n - cu[-(k + 1)] + 1.5, cu[-1] + 
+  #        0.5, n - cu[-1] + 1.5, border = col, lwd = lwd)
+  rect(cu[-(k + 1)] + 0.5, n - cu[-(k + 1)] + 0.5, cu[-1] + 
+         0.5, n - cu[-1] + 0.5, border = col, lwd = lwd)
 }
 
 corrRect.hclust3 = function (corr, col = "black", lwd = 2, tree) 
@@ -603,6 +609,95 @@ corrRect.hclust3 = function (corr, col = "black", lwd = 2, tree)
   clustab <- table(hc)[match(names(table(hc)), unique(hc))]
   k = length(clustab)
   cu <- c(0, cumsum(clustab))
-  rect(cu[-(k + 1)] + 0.5, n - cu[-(k + 1)] + 1.5, cu[-1] + 
-         0.5, n - cu[-1] + 1.5, border = col, lwd = lwd)
+  # rect(cu[-(k + 1)] + 0.5, n - cu[-(k + 1)] + 1.5, cu[-1] + 
+  #        0.5, n - cu[-1] + 1.5, border = col, lwd = lwd)
+  rect(cu[-(k + 1)] + 0.5, n - cu[-(k + 1)] + 0.5, cu[-1] + 
+         0.5, n - cu[-1] + 0.5, border = col, lwd = lwd)
 }
+
+# ---- SIMILARITIES : ----
+# Piquée dans cim.kernel
+similarities = function(list_K, scale = TRUE){
+  if (scale) {
+    K.scaled <- lapply(list_K, function(x) {
+      x.cosinus <- sweep(sweep(x$kernel, 2, sqrt(diag(x$kernel)), 
+                               "/"), 1, sqrt(diag(x$kernel)), "/")
+      t(t(x.cosinus - colSums(x.cosinus)/nrow(x.cosinus)) - 
+          rowSums(x.cosinus)/nrow(x.cosinus)) + sum(x.cosinus)/nrow(x.cosinus)^2
+    })
+  }
+  else {
+    K.scaled <- list_K
+  }
+  
+  outer(1:length(K.scaled), 1:length(K.scaled), 
+        FUN = Vectorize(function(i, j) {
+          out <- psych::tr(K.scaled[[i]] %*% K.scaled[[j]])
+          out <- out/(norm(K.scaled[[i]], type = "F") * norm(K.scaled[[j]], 
+                                                             type = "F"))
+          return(out)
+        }))
+}
+
+
+# ---- Double Centering function : ----
+# https://stackoverflow.com/questions/43639063/double-centering-in-r
+double_centering = function(M){
+  M = as.matrix(M)
+  
+  # compute the row-wise and column-wise mean matrices
+  R = M*0 + rowMeans(M)  # or `do.call(cbind, rep(list(rowMeans(tst)),3))`
+  C = t(M*0 + colMeans(M))  # or `do.call(rbind, rep(list(colMeans(tst)),3))`
+  
+  # substract them and add the grand mean
+  M - R - C + mean(M[])
+}
+
+# --- DistFromSim : ----
+
+
+DistFromSim = function(simMat){
+  mat1 = do.call("rbind", lapply(1:nrow(simMat), FUN = function(i){
+    sapply(1:ncol(simMat), FUN = function(j){
+      sqrt(simMat[i,i] + simMat[j,j] - 2*simMat[i,j])
+    })
+  }))
+  colnames(mat1) = colnames(simMat)
+  rownames(mat1) = rownames(simMat)
+  mat1
+}
+
+# ---- compareGraphs : ----
+
+# from pcalg::compareGraphs function
+
+compareGraphs_perso = function (gl, gt) 
+{
+  ml <- gl
+  mt <- gt
+  
+  p <- dim(ml)[2]
+  
+  mt[mt != 0] <- rep(1, sum(mt != 0))
+  ml[ml != 0] <- rep(1, sum(ml != 0))
+  
+  diffm <- ml - mt
+  nmbTrueGaps <- (sum(mt == 0) - p)/2
+  fpr <- if (nmbTrueGaps == 0) 
+    1
+  else (sum(diffm > 0)/2)/nmbTrueGaps
+  diffm2 <- mt - ml
+  nmbTrueEdges <- (sum(mt == 1)/2)
+  tpr <- if (nmbTrueEdges == 0) 
+    0
+  else 1 - (sum(diffm2 > 0)/2)/nmbTrueEdges
+  trueEstEdges <- (nmbTrueEdges - sum(diffm2 > 0)/2)
+  tdr <- if (sum(ml == 1) == 0) {
+    if (trueEstEdges == 0) 
+      1
+    else 0
+  }
+  else trueEstEdges/(sum(ml == 1)/2)
+  c(tpr = tpr, fpr = fpr, tdr = tdr)
+}
+
