@@ -44,6 +44,7 @@ library(reshape2)
 library(ggplot2)
 library(gridExtra)
 library(dendextend)
+library(ggpubr)
 
 library(corrplot)
 
@@ -51,6 +52,10 @@ library(parallel)
 library(parallelDist)
 
 library(dynamicTreeCut)
+```
+
+```{r}
+set.seed(1992)
 ```
 
 # Functions
@@ -124,8 +129,8 @@ Y_genes = read.table("Y_genes_mouse.txt", header = TRUE, sep = ",")
 
 ```{r}
 logCounts = logCounts[which(Matrix::rowSums(logCounts)!=0),which(Matrix::colSums(logCounts)!=0)]
-logCounts = logCounts[!rownames(logCounts) == "ENSMUSG00000086503",] # sex gene, trouvé dans https://github.com/MarioniLab/EmbryoTimecourse2018/blob/master/analysis_scripts/atlas/core_functions.R function getHVGs
-# Doit exclure aussi les genes ychr
+logCounts = logCounts[!rownames(logCounts) == "ENSMUSG00000086503",] # sex gene, found in  https://github.com/MarioniLab/EmbryoTimecourse2018/blob/master/analysis_scripts/atlas/core_functions.R function getHVGs
+# also exclude genes ychr
 logCounts = logCounts[!rownames(logCounts) %in% Y_genes$Gene.stable.ID, ]
 ```
 
@@ -178,6 +183,11 @@ logCounts_FDR = logCounts[rownames(logCounts)%in%rownames(fTV[fTV$FDR<0.1,]),]
 dim(logCounts_FDR)
 ```
 
+```{r}
+save(logCounts_FDR, fTV, file = "mouseDenis.RData")
+```
+
+
 ## Création liste par type de cellules
 
 ```{r}
@@ -229,6 +239,8 @@ cop_list = lapply(hc_list, cophenetic)
 mds_list = lapply(cop_list, cmdscale, k = nrow(as.matrix(cop_list[[1]]))-1)
 ```
 
+<!-- Note: negative values are encountered, very close to 0 (e-11 at most) -->
+
 ## MFA
 
 ```{r}
@@ -249,29 +261,6 @@ kable(data.frame(round(MFA_res$group$RV,2)))%>% kable_styling(full_width = FALSE
 corrplot(MFA_res$group$contrib[,1:50], method = "circle", mar = c(0, 0, 1.5, 0), bg = "antiquewhite", diag = TRUE, title = "Contribution, 50 first axes", is.corr = FALSE)
 ```
 
-### Factorial Maps
-
-```{r, fig.height = 3.5 , fig.width = 12}
-gg_tab = data.frame(MFA_res$group$coord, "Data" = rownames(MFA_res$group$coord))
-
-xlim_max = max(MFA_res$group$coord[,1]) + 0.05
-ylim_max = max(MFA_res$group$coord[,2]) + 0.05
-
-gg1 = ggplot(gg_tab, aes(x = Dim.1, y = Dim.2)) + 
-  geom_point() + geom_text(aes(label=rownames(gg_tab)),hjust=1, vjust=1) +
-  ggtitle("Axes 1/2") + theme_bw() + xlim(c(-xlim_max,xlim_max)) + ylim(c(0,ylim_max))
-gg2 = ggplot(gg_tab, aes(x = Dim.2, y = Dim.3)) + 
-  geom_point() + geom_text(aes(label=rownames(gg_tab)),hjust=1, vjust=1) +
-  ggtitle("Axes 2/3") + theme_bw()  + xlim(c(-xlim_max,xlim_max)) + ylim(c(0,ylim_max))
-gg3 = ggplot(gg_tab, aes(x = Dim.3, y = Dim.4)) + 
-  geom_point() + geom_text(aes(label=rownames(gg_tab)),hjust=1, vjust=1) +
-  ggtitle("Axes 3/4") + theme_bw()  + xlim(c(-xlim_max,xlim_max)) + ylim(c(0,ylim_max))
-gg4 = ggplot(gg_tab, aes(x = Dim.4, y = Dim.5)) + 
-  geom_point() + geom_text(aes(label=rownames(gg_tab)),hjust=1, vjust=1) + 
-  ggtitle("Axes 4/5") +  theme_bw()  + xlim(c(-xlim_max,xlim_max)) + ylim(c(0,ylim_max))
-grid.arrange(gg1, gg2, gg3, gg4, ncol = 4)
-```
-
 ## Cell type clustering
 
 ```{r}
@@ -283,23 +272,279 @@ DTC_AFM = dynamicTreeCut::cutreeDynamic(hc_samples, minClusterSize = 1, distM = 
 ```
 
 ```{r}
+names(DTC_AFM) = names(mds_list)
+```
+
+
+```{r}
 hc_samples_dend = branches_attr_by_clusters(as.dendrogram(hc_samples), clusters = (as.numeric(DTC_AFM)+1)[hc_samples$order])
 labels_colors(hc_samples_dend) = get_leaves_branches_col(hc_samples_dend)
 ```
 
-```{r}
-fviz_dend(hc_samples_dend, horiz = TRUE, ggtheme = theme_bw(),main = "Hierarchical Clustering of cell types",
-          labels_track_height = 0.2, lwd = 1)
+```{r, fig.height = 6, fig.width = 6.1}
+# png(file = "hc_samples.png", width = 1.5*9.5, height = 1.5*9.5, units = "cm", res = 300)
+ggdend = fviz_dend(hc_samples_dend, horiz = TRUE, ggtheme = theme_bw(),main = "Hierarchical Clustering of cell types",  cex = 1,
+          labels_track_height = 0.2, lwd = 1)  + theme(text = element_text(size = 15), axis.title = element_text(size = 17))
+ggdend
+# dev.off()
 ```
 
-# RV heatmap
+## Factorial Maps
+
+```{r, fig.height = 3.5 , fig.width = 12}
+gg_tab = data.frame(MFA_res$group$coord, "Data" = rownames(MFA_res$group$coord), "Classification" = as.factor(DTC_AFM))
+
+xlim_max = max(MFA_res$group$coord[,1]) + 0.05
+ylim_max = max(MFA_res$group$coord[,2]) + 0.05
+
+cols = c("1" = "#00BA38", "2" = "#F8766D", "3" = "#619CFF")
+
+gg1 = ggplot(gg_tab, aes(x = Dim.1, y = Dim.2, color = Classification)) + 
+  geom_point() + geom_text(aes(label=rownames(gg_tab)),hjust=1, vjust=1) +
+  ggtitle("Axes 1/2") + theme_bw() + xlim(c(-xlim_max,xlim_max)) + ylim(c(-0.05, ylim_max)) +
+  xlab(paste0("Dim 1 - ", round(MFA_res$eig[1,2], 2), "%")) + ylab(paste0("Dim 2 - ", round(MFA_res$eig[2,2], 2), "%")) +
+  theme(text = element_text(size = 15), axis.title = element_text(size = 15)) +
+  scale_color_manual(values = cols) + theme(legend.position = "none")
+gg2 = ggplot(gg_tab, aes(x = Dim.2, y = Dim.3, color = Classification)) + 
+  geom_point() + geom_text(aes(label=rownames(gg_tab)),hjust=1, vjust=1) +
+  ggtitle("Axes 2/3") + theme_bw() + xlim(c(-xlim_max,xlim_max)) + ylim(c(-0.05, ylim_max)) +
+  xlab(paste0("Dim 2 - ", round(MFA_res$eig[2,2], 2), "%")) + ylab(paste0("Dim 3 - ", round(MFA_res$eig[3,2], 2), "%")) +
+  theme(text = element_text(size = 15), axis.title = element_text(size = 15))+
+  scale_color_manual(values = cols) + theme(legend.position = "none")
+gg3 = ggplot(gg_tab, aes(x = Dim.3, y = Dim.4, color = Classification)) + 
+  geom_point() + geom_text(aes(label=rownames(gg_tab)),hjust=1, vjust=1) +
+  ggtitle("Axes 3/4") + theme_bw() + xlim(c(-xlim_max,xlim_max)) + ylim(c(-0.05, ylim_max)) +
+  xlab(paste0("Dim 3 - ", round(MFA_res$eig[3,2], 2), "%")) + ylab(paste0("Dim 4 - ", round(MFA_res$eig[4,2], 2), "%")) +
+  theme(text = element_text(size = 15), axis.title = element_text(size = 15))+
+  scale_color_manual(values = cols)+ theme(legend.position = "none")
+gg4 = ggplot(gg_tab, aes(x = Dim.4, y = Dim.5, color = Classification)) + 
+  geom_point() + geom_text(aes(label=rownames(gg_tab)),hjust=1, vjust=1) + 
+  ggtitle("Axes 4/5") + theme_bw() + xlim(c(-xlim_max,xlim_max)) + ylim(c(-0.05, ylim_max)) +
+  xlab(paste0("Dim 4 - ", round(MFA_res$eig[4,2], 2), "%")) + ylab(paste0("Dim 5 - ", round(MFA_res$eig[5,2], 2), "%")) +
+  theme(text = element_text(size = 15), axis.title = element_text(size = 15))+
+  scale_color_manual(values = cols) + theme(legend.position = "none")
+# grid.arrange(gg1, gg2, gg3, gg4, ncol = 4)
+```
 
 ```{r}
-corrplot2(MFA_res$group$RV, method = "circle", mar = c(0, 0, 1.5, 0), bg = "antiquewhite", diag = FALSE, tl.cex = 0.8, tl.col = "black", is.corr = FALSE,
+ggall = ggarrange(gg1, gg2, gg3, gg4, ncol = 2, nrow = 2, common.legend = TRUE, legend="bottom")
+ggall
+```
+
+
+
+## RV heatmap
+
+```{r, fig.height = 6, fig.width = 6.1}
+# postscript(file = "RV_AFM.eps", width = 8, height = 8, horizontal = FALSE, onefile = FALSE, paper = "special")
+corrplot2(MFA_res$group$RV[-ncol(MFA_res$group$RV),-ncol(MFA_res$group$RV)], method = "circle", mar = c(0, 0, 0, 0), bg = "gray88", diag = FALSE, tl.cex = 1.2, tl.col = "black", is.corr = FALSE,
          order = hc_samples_dend,
-        coef_thresh = 0.23, addCoef.col = "gray98")
+        coef_thresh = 0.44, addCoef.col = "gray98") 
+corrPlot = recordPlot()
+# dev.off()
 ```
 
+```{r, fig.height = 6, fig.width = 6.1}
+# png(file = "RV_AFM.png", width = 1.5*9.5, height = 1.5*9.5, units = "cm", res = 300)
+corrplot2(MFA_res$group$RV, method = "circle", mar = c(0, 0, 0, 0), bg = "gray88", diag = FALSE, tl.cex = 1.2, tl.col = "black", is.corr = FALSE,
+         order = hc_samples_dend,
+        coef_thresh = 0.44, addCoef.col = "gray98") 
+# dev.off()
+```
+
+## Consensus tree on global MFA
+
+```{r, fig.height = 5, fig.width = 10}
+g1 = fviz_mfa_ind(MFA_res, geom = "point")
+g2 = fviz_mfa_ind(MFA_res, geom = "point", axes = c(2,3))
+ggarrange(g1, g2, ncol = 2)
+```
+
+
+```{r}
+hc_gMFA = hclust(dist(MFA_res$ind$coord, method = "euclidean"), method = "ward.D2")
+```
+
+```{r}
+hc_gMFA2 = hc_gMFA
+hc_gMFA2$labels = NA
+par(mar = c(0.5, 2.5, 2.5, 0.1))
+plot(as.dendrogram(hc_gMFA2), main = "Hierarchical clustering of genes \n global MFA")
+```
+
+```{r}
+# png(filename = "mouse_gMFA_hc.png", width = 1.5*15, height = 1.5*7.5, res = 300, units = c("cm"))
+hc_gMFA2 = hc_gMFA
+hc_gMFA2$labels = NA
+par(mar = c(0.5, 2.5, 2.5, 0.1))
+plot(as.dendrogram(hc_gMFA2), main = "Hierarchical clustering of genes \n global MFA")
+# dev.off()
+```
+
+## Consensus tree on MFA subgroups
+
+```{r}
+names(DTC_AFM) = names(mds_list)
+```
+
+```{r}
+mds_sublists = lapply(1:max(DTC_AFM), FUN = function(i) mds_list[names(mds_list)%in%names(DTC_AFM[DTC_AFM == i])])
+```
+
+```{r}
+mfa_sublists = lapply(mds_sublists, FUN = function(liste){
+  MFA(do.call("cbind", liste),
+              group = unlist(lapply(liste, ncol)),
+              name.group = names(liste),
+              type = rep("c", length(liste)), ncp = Inf, graph = FALSE)
+})
+```
+
+```{r}
+hc_cs_sub = lapply(mfa_sublists, FUN = function(MFARes) hclust(dist(MFARes$ind$coord), method = "ward.D2"))
+```
+
+```{r}
+par(mar = c(0.5, 2.5, 2.5, 0.1))
+res = lapply(1:length(hc_cs_sub), FUN = function(i){
+  hc = hc_cs_sub[[i]]
+  hc$labels = NA
+  plot(as.dendrogram(hc), main = paste0("Consensus Tree - Group ", i)) 
+})
+```
+
+
+# Figures (MDS+MFA)
+
+```{r}
+library(ggplot2)
+library(cowplot)
+```
+
+## Clustering/RV/Maps
+
+```{r}
+ggsave(filename = "Figure8.pdf",
+       plot =  ggarrange(ggdraw(ggdend, clip = "on", xlim = c(-0.05, 1)),  ggdraw(ggall, clip = "on"), ncol = 2, labels = c("A)", "B)")),
+       width = 2*15, height = 2*6.5, units = c("cm"))
+```
+
+## Consensus trees
+
+```{r}
+par(mar = c(0.5, 2.5, 2.5, 0.1))
+
+hc = hc_gMFA
+hc$labels = NA
+
+plot(as.dendrogram(hc), main = "Consensus Tree \n global MFA", cex = 1, cex.axis = 1, cex.main = 1) 
+p1 = recordPlot()
+
+hc = hc_cs_sub[[1]]
+hc$labels = NA
+plot(as.dendrogram(hc), main = paste0("Consensus Tree \n Group ", 1), cex = 1, cex.axis = 1, cex.main = 1)  
+p2 = recordPlot()
+
+hc = hc_cs_sub[[2]]
+hc$labels = NA
+plot(as.dendrogram(hc), main = paste0("Consensus Tree  \n Group ", 2), cex = 1, cex.axis = 1, cex.main = 1) 
+p3 = recordPlot()
+
+hc = hc_cs_sub[[3]]
+hc$labels = NA
+plot(as.dendrogram(hc), main = paste0("Consensus Tree  \n Group ", 3), cex = 1, cex.axis = 1, cex.main = 1) 
+p4 = recordPlot()
+```
+
+```{r, fig.width = 15, fig.height=5}
+ggsave(filename = "Figure9.png",  
+        plot =    ggarrange(ggdraw(p1, clip = "on"), 
+          ggdraw(p2, clip = "on"), 
+          ggdraw(p3, clip = "on"), 
+          ggdraw(p4, clip = "on"), ncol = 4, labels = ''), width = 2*15, height = 2*5, units = c("cm"))
+```
+
+# Multiple Kernel integration
+
+```{r}
+library(mixKernel)
+```
+
+## Transformation distance matrices to kernels
+
+```{r}
+list_kernel_coph_mat = lapply(cop_list, FUN = function(mat) -double_centering(mat^2)/2)
+```
+
+```{r}
+list_kernel_coph = lapply(list_kernel_coph_mat, FUN = function(mat){
+  kern = list(kernel = mat, kernel.fun = "cophenetic")
+  class(kern) = "kernel"
+  kern
+})
+```
+
+## Kernels combination
+
+```{r}
+list_args = list_kernel_coph
+list_args$method = "full-UMKL"
+combKern = do.call(combine.kernels, list_args)
+```
+
+```{r}
+round(combKern$weights, 3)
+```
+
+```{r}
+mat_sim = similarities(list_kernel_coph)
+rownames(mat_sim) = colnames(mat_sim) = names(list_kernel_coph)
+```
+
+```{r}
+mat_dist = DistFromSim(mat_sim)
+```
+
+```{r}
+hc_samples = hclust(as.dist(mat_dist), method = "complete")
+```
+
+
+```{r}
+DTC_Kern = dynamicTreeCut::cutreeDynamic(hc_samples, minClusterSize = 1, distM = as.matrix(as.dist(mat_dist)))
+k_cut = max(DTC_Kern)
+groups = cutree(hc_samples, k = k_cut)
+```
+
+
+```{r, fig.height = 5, fig.width = 5}
+corrplot2(mat_sim, method = "circle", mar = c(0, 0, 0, 0), bg = "gray85", diag = FALSE, tl.cex = 1, tl.col = "black", 
+         is.corr = FALSE, addrect = k_cut, order = hc_samples, addCoef.col = "antiquewhite", coef_thresh = 0.5)
+corrPlot = recordPlot()
+```
+
+```{r}
+hc_samples_dend = branches_attr_by_clusters(as.dendrogram(hc_samples), clusters = (as.numeric(DTC_Kern)+1)[hc_samples$order])
+labels_colors(hc_samples_dend) = get_leaves_branches_col(hc_samples_dend)
+```
+
+```{r, fig.height = 6, fig.width = 6.5}
+# png(file = "hc_samples_kernels.png", width = 1.5*9.5, height = 1.5*9.5, units = "cm", res = 300)
+ggdend = fviz_dend(hc_samples_dend, horiz = TRUE, ggtheme = theme_bw(),main = "Hierarchical Clustering of cell types",  cex = 1,
+          labels_track_height = 0.7, lwd = 1)  + theme(text = element_text(size = 15), axis.title = element_text(size = 17))
+# ggdend
+# dev.off()
+ggdend
+```
+
+# Figures (kernels)
+
+```{r}
+ggsave(filename = "Supplementary2.pdf",
+       plot =  ggarrange(ggdraw(fviz_dend(hc_samples_dend, horiz = TRUE, ggtheme = theme_bw(),main = "Hierarchical Clustering of cell types",  cex = 1,
+                                          labels_track_height = 0.7, lwd = 1)  + theme(text = element_text(size = 15), axis.title = element_text(size = 17)), clip = "on", xlim = c(-0.05, 1)),  ggdraw(corrPlot, clip = "on"), ncol = 2, labels = c("A)", "B)")),
+       width = 2*15, height = 2*6.5, units = c("cm"))
+```
 
 # InfoSession
 
